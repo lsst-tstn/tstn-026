@@ -16,7 +16,7 @@ Some background and relevant information about the MTAOS can be found in the `AO
 In addition to being an extremely critical component for operating the Main Telescope (MT) the MTAOS is also unique in the sense that it interfaces with all other sub-systems, e.g.;
 
   - Camera, to acquire the intra/extra or corner rafts data for wavefront error processing.
-  - Data Management, to process the data with instrument signature removal (ISR) and wavefront estimation pipeline (WEP).
+  - Data Management, to process the data with instrument signature removal (ISR) and wavefront estimation pipeline (`WEP`_).
   - Telescope and Site, mainly to apply optical corrections.
 
 Here we explore updates to the `MTAOS (xml) interface`_ and overall software architecture to align it with the evolution of the system design.
@@ -25,7 +25,7 @@ The most significant advancement that affect how the MTAOS operates are;
   - Better understanding of the observatory operation procedures.
   - Consolidation of the data access interface, through butler gen3, for local data processing of corner wavefront sensors and remote access for full array mode.
   - Consolidation of the OCS Controlled Pipeline System (`OCPS`_) for remote data processing.
-  - Conversion of the wavefront estimation pipeline (`WEP`_) into a butler gen3 pipeline task.
+  - Conversion of `WEP`_ into a butler gen3 pipeline task.
 
 .. _MTAOS: https://ts-mtaos.lsst.io/index.html
 .. _AOS Workshop: https://confluence.lsstcorp.org/x/zzTbAw
@@ -51,25 +51,64 @@ This will have to be carefully managed by observatory personnel over time, but i
 Image ingestion
 ---------------
 
-As part of the wavefront processing commands, the current version of the MTAOS receives files names and directory location.
+As part of the wavefront processing commands, the current version of the MTAOS receive files names and directory location.
 This data is initially ingested to a butler instance to allow them to be ISR corrected and later WEP processed.
 
 Since the data will now be ingested by a different component and will be made available to the MTAOS through butler, there is no more need for a local ingestion.
 
+.. _Source-selection-command:
+
+Source selection command
+------------------------
+
+In most cases, we will know the coordinates of the next visit field ahead of time.
+That means some pre-processing activities can be done in parallel, while the telescope slews and the image is acquired.
+One of these processes is to prepare a list of suitable targets for wavefront sensing.
+
+This could be done by adding a command that would cause the MTAOS to run the source selection routine.
+The command payload would minimally be;
+
+  - RA: Right ascension of the field (in hours).
+  - Dec: Declination of the field (in degrees).
+  - PA: Position angle (in degrees).
+  - filter: The filter used for the observation.
+  - mode: An enumeration specifying the wfs mode; corner, full array, etc.
+
+Issuing the command would look something like:
+
+.. code-block:: py
+
+  from lsst.ts.wep import CamType
+
+  # Select sources for Main Camera Corner wavefront sensor mode
+  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., filter="r", type=CamType.LsstFamCam)
+
+  # Select sources for Main Camera Full array mode
+  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., filter="r", type=CamType.LsstCam)
+
+  # Select sources for ComCam mode
+  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., filter="r", type=CamType.ComCam)
+
+
 Simplification of wfs process commands
 --------------------------------------
 
-As mention above, the wfs process commands receives file names and path.
-With the data already ingested in the butler the images can be uniquely identified by the ``visitId`` entry in the database.
-That means, all process commands need to be updated to receive the ``visitId`` instead of the files name and path.
+As mentioned above, the wfs process commands receives file names and path.
+With the data already ingested in the butler the images can be uniquely identified by the ``dataId`` entry in the database.
+That means, all process commands need to be updated to receive the ``dataId`` instead of the files name and path.
+
+.. note::
+
+   For accessing the images from the butler it is also required to know the ``raft`` and ``sensor``.
+   Nevertheless, this information can be derived from the sources selected for wavefront sensing (see :ref:`Source-selection-command`).
 
 At the same time, most of the metadata that is now passed as part of the process commands (``fieldRA``, ``fieldDEC``, ``filter``, ``cameraRotation``) is also available as metadata in the butler and can be removed from the command payload.
 
-Furthermore, through the ``visitId`` one can identify the source of the image (ComCam or LSSTCam), so there is no need for special commands for each one of them.
+Furthermore, through the ``dataId`` one can identify the source of the image (ComCam or LSSTCam), so there is no need for special commands for each one of them.
 
 At the same time, we can differentiate between an Intra/Extra wavefront analysis process and a corner wavefront sensors by the input alone.
-If only one input ``visitId`` then it can be assumed to be a corner wavefront sensor run.
-If, in addition to ``visitId`` an ``extraId`` is given, it can be considered and Intra/Extra wavefront process.
+If only one input ``dataId`` then it can be assumed to be a corner wavefront sensor run.
+If, in addition to ``dataId`` an ``extraId`` is given, it can be considered and Intra/Extra wavefront process.
 
 The command would be used as follows:
 
@@ -86,44 +125,14 @@ The command would be used as follows:
   # Process full array intra/extra focal images.
   # Frames can be ComCam or LSSTCam
   await mtaos.cmd_runWEP.set_start(
-      visitId=2020103000040, extraId=2020103000041
+      dataId=2020103000040, extraId=2020103000041
   )
 
   # Process corner wavefront sensor
   # Frames should be LSSTCam only. If ComCam command will raise an exception.
   await mtaos.cmd_runWEP.set_start(
-      visitId=2020103000040
+      dataId=2020103000040
   )
-
-Source selection command
-------------------------
-
-In most cases, we will known the coordinates of the next visit field ahead of time.
-That means some pre-processing activities can be done in parallel, while the telescope slew and the image is acquired.
-One of these processes is to prepare a list of suitable targets for wavefront sensing.
-
-This could be done by adding a command that would cause the MTAOS to run the source selection routine.
-The command payload would minimally be;
-
-  - RA: Right ascension of the field (in hours).
-  - Dec: Declination of the field (in degrees).
-  - PA: Position angle (in degrees).
-  - mode: An enumeration specifying the wfs mode; corner, full array, etc.
-
-Issuing the command would look something like:
-
-.. code-block:: py
-
-  from lsst.ts.idl.MTAOS import WFSMode
-
-  # Select sources for Main Camera Corner wavefront sensor mode
-  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., type=WFSMode.Corner)
-
-  # Select sources for Main Camera Full array mode
-  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., type=WFSMode.FullArray)
-
-  # Select sources for ComCam mode
-  await mtaos.cmd_selectSources.set_start(ra=14., dec=-10., pa=0., type=WFSMode.ComCam)
 
 Pre-processing frames
 ---------------------
@@ -162,7 +171,7 @@ With all this considered, an Intra/Extra focus sequence with ``ComCam`` could be
         ra=14.,
         dec=-10.,
         pa=0.,
-        type=WFSMode.ComCam
+        type=CamType.ComCam
       )
     )
 
@@ -202,12 +211,18 @@ This means, SAL Scripts can be written for ``ComCam`` in a way that will be reus
 .. _MTCS: https://ts-observatory-control.lsst.io/user-guide/maintel/mtcs-user-guide.html
 .. _ComCam: https://ts-observatory-control.lsst.io/user-guide/maintel/CCCamera-user-guide.html
 
+.. note::
+
+    It is very likely that there will be a background task automatically running ISR on images coming out of the summit.
+    If this is the case, we may not need a command to pre-process the images.
+    In any case, it is unlikely such system will be ready early or during commissioning, which makes this command a valuable addition.
+
 .. _user-provided-optical-aberration:
 
 User-provided optical aberration
 --------------------------------
 
-In some conditions is may be useful to allow users to specify optical aberrations to be introduced to the system, e.g., add a certain amount of comma to the system.
+In some conditions it may be useful to allow users to specify optical aberrations to be introduced to the system, e.g., add a certain amount of comma to the system.
 The MTAOS can easily receive a list of Zernike coefficients, pass them through the Optical Feedback Control and compute the offsets and bending modes required.
 
 The command would simply receive an array of wavefront errors and apply them to the system properly registering the correction internally.
@@ -298,14 +313,3 @@ Some updates to the ``Model`` class will have to be implemented to support the :
 Fortunately, the use of ``wep`` and ``ofc`` is well abstracted in the ``Model`` class, being restricted to some specific methods that are called by the CSC.
 
 .. _OFC: https://github.com/lsst-ts/ts_ofc
-
-Miscellaneous
-=============
-
-These are a couple of improvements we should probably implement.
-
-Unify configuration schema
---------------------------
-
-The MTAOS currently has two configuration schemas; one for the CSC and a separate one called ``telescopedof.yaml``, which contains the configuration for the the OFC class.
-We should probably merge this second configuration file into the CSC configuration.
